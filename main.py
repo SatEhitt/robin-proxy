@@ -15,6 +15,7 @@ app.add_middleware(
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
+
 async def scrape(url: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
@@ -26,6 +27,7 @@ async def scrape(url: str) -> str:
             return text[:3000]
     except Exception as e:
         return f"Scrape error: {str(e)}"
+
 
 async def ddg_search(query: str) -> list:
     try:
@@ -43,6 +45,7 @@ async def ddg_search(query: str) -> list:
     except Exception as e:
         return [{"title": "Search error", "url": str(e)}]
 
+
 @app.post("/chat")
 async def chat(request: Request):
     body = await request.json()
@@ -52,4 +55,36 @@ async def chat(request: Request):
     last_msg = messages[-1]["content"].lower() if messages else ""
     search_context = ""
 
-    if any(kw in last_msg for kw in ["search", "find", "look up", "latest", "scrape", "fetch", "browse"]):
+    keywords = ["search", "find", "look up", "latest", "scrape", "fetch", "browse"]
+    if any(kw in last_msg for kw in keywords):
+        query = messages[-1]["content"]
+        results = await ddg_search(query)
+        if results:
+            search_context = "\n\nWEB SEARCH RESULTS:\n"
+            for r in results:
+                search_context += f"- {r['title']}: {r['url']}\n"
+            if results[0]["url"].startswith("http"):
+                content = await scrape(results[0]["url"])
+                search_context += f"\nPAGE CONTENT:\n{content}"
+
+    full_system = system + search_context
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "llama3-70b-8192",
+                "max_tokens": 1000,
+                "messages": [
+                    {"role": "system", "content": full_system},
+                    *messages
+                ],
+            }
+        )
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        return {"content": [{"type": "text", "text": text}]}
